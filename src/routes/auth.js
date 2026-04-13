@@ -284,3 +284,6 @@ router.put('/verify-email/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+// Health check
+router.get('/health', (req, res) => res.json({ status: 'ok', service: 'auth' }));
