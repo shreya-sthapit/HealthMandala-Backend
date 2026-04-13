@@ -240,3 +240,6 @@ router.get('/debug/all', async (req, res) => {
 });
 
 module.exports = router;
+
+// Health check
+router.get('/health', (req, res) => res.json({ status: 'ok', service: 'patient' }));
