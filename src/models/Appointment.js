@@ -107,3 +107,8 @@ appointmentSchema.index({ patientId: 1, appointmentDate: 1 });
 appointmentSchema.index({ doctorId: 1, appointmentDate: 1 });
 
 module.exports = mongoose.model('Appointment', appointmentSchema, 'Appointments');
+// Virtual: appointment status label
+AppointmentSchema.virtual('statusLabel').get(function() {
+  const labels = { pending: 'Pending', confirmed: 'Confirmed', cancelled: 'Cancelled', completed: 'Completed', rejected: 'Rejected' };
+  return labels[this.status] || this.status;
+});
