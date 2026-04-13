@@ -108,17 +108,15 @@ userSchema.pre('save', function(next) {
   next();
 });
 
-module.exports = mongoose.model('User', userSchema);
-
 // Static method to find by email or phone
-UserSchema.statics.findByCredential = function(email, phone) {
+userSchema.statics.findByCredential = function(email, phone) {
   if (email) return this.findOne({ email });
   if (phone) return this.findOne({ phone });
   return null;
 };
 
 // Instance method: get public profile (no password)
-UserSchema.methods.toPublicJSON = function() {
+userSchema.methods.toPublicJSON = function() {
   return {
     id: this._id,
     firstName: this.firstName,
@@ -130,3 +128,5 @@ UserSchema.methods.toPublicJSON = function() {
     isEmailVerified: this.isEmailVerified
   };
 };
+
+module.exports = mongoose.model('User', userSchema);

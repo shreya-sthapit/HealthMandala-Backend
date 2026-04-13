@@ -59,9 +59,9 @@ prescriptionSchema.pre('save', function(next) {
 prescriptionSchema.index({ patientId: 1, checkupDate: -1 });
 prescriptionSchema.index({ doctorId: 1, checkupDate: -1 });
 
-module.exports = mongoose.model('Prescription', prescriptionSchema, 'Prescriptions');
-
 // Virtual: formatted date
-PrescriptionSchema.virtual('formattedDate').get(function() {
+prescriptionSchema.virtual('formattedDate').get(function() {
   return this.createdAt ? this.createdAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
 });
+
+module.exports = mongoose.model('Prescription', prescriptionSchema, 'Prescriptions');
