@@ -46,3 +46,15 @@ TWILIO_VERIFY_SERVICE_SID=your_service_sid
 | PUT | /api/doctor/schedule/:userId | Update doctor schedule |
 | GET | /api/appointments/available-tokens/:doctorId/:date | Get available tokens |
 | POST | /api/appointments/book | Book appointment |
+
+## Middleware
+- `authMiddleware` — JWT verification for protected routes
+- `optionalAuth` — attaches user if token present, doesn't block
+- `roleCheck` — role-based access control (patient/doctor/admin)
+- `validate` — request body field validation
+- `rateLimiter` — in-memory rate limiting for auth endpoints
+
+## Utilities
+- `timeUtils` — token calculation from working hours
+- `dateUtils` — timezone-safe date parsing and leave checking
+- `responseUtils` — consistent API response format
