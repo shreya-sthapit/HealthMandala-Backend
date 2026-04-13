@@ -116,3 +116,17 @@ UserSchema.statics.findByCredential = function(email, phone) {
   if (phone) return this.findOne({ phone });
   return null;
 };
+
+// Instance method: get public profile (no password)
+UserSchema.methods.toPublicJSON = function() {
+  return {
+    id: this._id,
+    firstName: this.firstName,
+    lastName: this.lastName,
+    email: this.email,
+    phone: this.phone,
+    role: this.role,
+    status: this.status,
+    isEmailVerified: this.isEmailVerified
+  };
+};
