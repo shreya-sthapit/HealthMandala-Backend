@@ -159,3 +159,14 @@ module.exports = router;
 
 // Health check
 router.get('/health', (req, res) => res.json({ status: 'ok', service: 'prescriptions' }));
+
+// Get prescription count for a patient
+router.get('/count/patient/:patientId', async (req, res) => {
+  try {
+    const Prescription = require('../models/Prescription');
+    const count = await Prescription.countDocuments({ patientId: req.params.patientId });
+    res.json({ success: true, count });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get count', message: error.message });
+  }
+});
