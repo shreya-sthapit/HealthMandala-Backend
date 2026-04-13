@@ -89,3 +89,8 @@ doctorRegistrationSchema.pre('save', function(next) {
 });
 
 module.exports = mongoose.model('DoctorRegistration', doctorRegistrationSchema, 'DoctorRegistration');
+
+// Virtual: full name
+DoctorRegistrationSchema.virtual('fullName').get(function() {
+  return `Dr. ${this.firstName} ${this.lastName}`;
+});
