@@ -109,3 +109,10 @@ userSchema.pre('save', function(next) {
 });
 
 module.exports = mongoose.model('User', userSchema);
+
+// Static method to find by email or phone
+UserSchema.statics.findByCredential = function(email, phone) {
+  if (email) return this.findOne({ email });
+  if (phone) return this.findOne({ phone });
+  return null;
+};
