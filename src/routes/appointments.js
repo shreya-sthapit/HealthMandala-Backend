@@ -640,3 +640,17 @@ router.get('/doctor-patients/:doctorId', async (req, res) => {
 module.exports = router;
 // Health check
 router.get('/health', (req, res) => res.json({ status: 'ok', service: 'appointments' }));
+
+// Get appointment statistics for a doctor
+router.get('/stats/:doctorId', async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const total = await Appointment.countDocuments({ doctorId });
+    const confirmed = await Appointment.countDocuments({ doctorId, status: 'confirmed' });
+    const pending = await Appointment.countDocuments({ doctorId, status: 'pending' });
+    const cancelled = await Appointment.countDocuments({ doctorId, status: 'cancelled' });
+    res.json({ success: true, stats: { total, confirmed, pending, cancelled } });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get stats', message: error.message });
+  }
+});
