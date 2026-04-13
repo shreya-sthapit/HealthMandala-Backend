@@ -12,3 +12,15 @@ const getDayName = (dateStr) => {
 };
 
 module.exports = { parseLocalDate, getDayName };
+
+// Check if a date falls within a leave period
+const isOnLeave = (dateStr, leaves = []) => {
+  const checkDate = parseLocalDate(dateStr);
+  return leaves.some(leave => {
+    const start = new Date(leave.startDate);
+    const end = new Date(leave.endDate);
+    return checkDate >= start && checkDate <= end;
+  });
+};
+
+module.exports = { parseLocalDate, getDayName, isOnLeave };
