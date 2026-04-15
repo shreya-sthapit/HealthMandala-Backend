@@ -2,9 +2,138 @@ const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { sendVerificationEmail } = require('../config/mailer');
+const { sendEmailOTP } = require('../config/mailer');
+const { verifyNMCDoctor } = require('../utils/nmcVerify');
 
-const EMAIL_VERIFY_SECRET = process.env.JWT_SECRET + '_email_verify';
+// In-memory OTP store: email → { otp, expiresAt, userData }
+const emailOtpStore = new Map();
+
+// ── Step 1: Send OTP to email ──
+router.post('/send-email-otp', async (req, res) => {
+  try {
+    const { firstName, lastName, email, password, role, nmcNumber, experienceYears, specialization, qualification, currentHospital } = req.body;
+    if (!email || !password || !firstName) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const existing = await User.findOne({ email });
+    if (existing) return res.status(400).json({ error: 'Email already registered' });
+
+    // For doctors: validate NMC number format before sending OTP
+    if ((role || 'patient') === 'doctor' && nmcNumber) {
+      const nmcResult = await verifyNMCDoctor(nmcNumber, firstName, lastName || '');
+      if (!nmcResult.verified) {
+        return res.status(400).json({ 
+          error: nmcResult.reason,
+          nmcVerificationFailed: true
+        });
+      }
+      // Flag for admin review — doctor registration will be set to 'pending'
+      console.log(`Doctor signup: NMC ${nmcNumber} for ${firstName} ${lastName} — pending admin review`);
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 1 * 60 * 1000; // 1 minute
+
+    emailOtpStore.set(email, {
+      otp, expiresAt, firstName, lastName, email, password, role: role || 'patient',
+      nmcNumber, experienceYears, specialization, qualification, currentHospital
+    });
+
+    await sendEmailOTP(email, firstName, otp);
+    res.json({ success: true, message: 'OTP sent to your email' });
+  } catch (error) {
+    console.error('Send email OTP error:', error);
+    res.status(500).json({ error: 'Failed to send OTP', message: error.message });
+  }
+});
+
+// ── Step 2: Verify OTP and register user ──
+router.post('/verify-email-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    const record = emailOtpStore.get(email);
+
+    if (!record) return res.status(400).json({ error: 'No OTP found for this email. Please sign up again.' });
+    if (Date.now() > record.expiresAt) {
+      emailOtpStore.delete(email);
+      return res.status(400).json({ error: 'OTP has expired. Please sign up again.' });
+    }
+    if (record.otp !== otp) return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
+
+    // OTP correct — create user
+    const existing = await User.findOne({ email });
+    if (existing) {
+      emailOtpStore.delete(email);
+      return res.json({ success: true, user: { id: existing._id, firstName: existing.firstName, lastName: existing.lastName, email: existing.email, role: existing.role } });
+    }
+
+    const user = new User({
+      firstName: record.firstName,
+      lastName: record.lastName,
+      email: record.email,
+      password: record.password,
+      role: record.role,
+      authMethod: 'email',
+      isEmailVerified: true,
+      status: 'active',
+    });
+    await user.save();
+    emailOtpStore.delete(email);
+
+    // If doctor, create DoctorRegistration with the extra fields
+    if (record.role === 'doctor') {
+      const DoctorRegistration = require('../models/DoctorRegistration');
+      const doctorReg = new DoctorRegistration({
+        userId: user._id,
+        firstName: record.firstName,
+        lastName: record.lastName,
+        email: record.email,
+        nmcNumber: record.nmcNumber || '',
+        experienceYears: parseInt(record.experienceYears) || 0,
+        specialization: record.specialization || '',
+        qualification: record.qualification || '',
+        currentHospital: record.currentHospital || '',
+        status: 'pending', // Admin must verify NMC at nmc.org.np before approving
+      });
+      await doctorReg.save();
+    }
+
+    // Issue JWT so frontend can log in immediately after OTP verification
+    const token = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      success: true,
+      token,
+      user: { id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email, role: user.role }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Verification failed', message: error.message });
+  }
+});
+
+// ── Resend OTP ──
+router.post('/resend-email-otp', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const record = emailOtpStore.get(email);
+    if (!record) return res.status(400).json({ error: 'No pending signup for this email. Please sign up again.' });
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    record.otp = otp;
+    record.expiresAt = Date.now() + 1 * 60 * 1000;
+    emailOtpStore.set(email, record);
+
+    await sendEmailOTP(email, record.firstName, otp);
+    res.json({ success: true, message: 'New OTP sent' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to resend OTP', message: error.message });
+  }
+});
 
 // ── Step 1: Send verification email ──
 router.post('/send-verification', async (req, res) => {
@@ -52,7 +181,7 @@ router.get('/verify-email', async (req, res) => {
     // Idempotent — if already registered just redirect to success
     const existing = await User.findOne({ email: payload.email });
     if (existing) {
-      const redirectPath = existing.role === 'doctor' ? '/doctor-register/personal' : '/register/personal';
+      const redirectPath = existing.role === 'doctor' ? '/doctor-dashboard' : '/register/personal';
       return res.redirect(
         `${frontendBase}${redirectPath}?verified=1&userId=${existing._id}` +
         `&firstName=${encodeURIComponent(existing.firstName)}` +
@@ -74,14 +203,15 @@ router.get('/verify-email', async (req, res) => {
     });
     await user.save();
 
-    const redirectPath = payload.role === 'doctor' ? '/doctor-register/personal' : '/register/personal';
-    res.redirect(
-      `${frontendBase}${redirectPath}?verified=1&userId=${user._id}` +
-      `&firstName=${encodeURIComponent(payload.firstName)}` +
-      `&lastName=${encodeURIComponent(payload.lastName)}` +
-      `&email=${encodeURIComponent(payload.email)}` +
-      `&role=${payload.role}`
-    );
+    const redirectPath = payload.role === 'doctor' ? '/doctor-auth?verified=1' : '/register/personal';
+    const redirectUrl = payload.role === 'doctor'
+      ? `${frontendBase}/doctor-auth?verified=1&email=${encodeURIComponent(user.email)}`
+      : `${frontendBase}/register/personal?verified=1&userId=${user._id}` +
+        `&firstName=${encodeURIComponent(payload.firstName)}` +
+        `&lastName=${encodeURIComponent(payload.lastName)}` +
+        `&email=${encodeURIComponent(payload.email)}` +
+        `&role=${payload.role}`;
+    res.redirect(redirectUrl);
   } catch (error) {
     console.error('Verify email error:', error);
     res.redirect(`${frontendBase}/verify-email?status=error`);
@@ -127,8 +257,8 @@ router.post('/register/email', async (req, res) => {
       role: role || 'patient',
       authMethod: 'email',
       firebaseUid,
-      isEmailVerified: false,
-      status: 'pending'
+      isEmailVerified: true,
+      status: 'active'
     });
 
     await user.save();
