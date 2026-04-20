@@ -373,49 +373,63 @@ router.get('/debug/schedule/:doctorId', async (req, res) => {
   }
 });
 
-// Update doctor schedule
+// Update doctor schedule (supports per-hospital)
 router.put('/schedule/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { schedule, lunchBreak, consultationDuration, consultationFee, maxPatientsPerDay } = req.body;
+    const { schedule, lunchBreak, consultationDuration, consultationFee, maxPatientsPerDay, hospital } = req.body;
 
-    // Find doctor by userId
     const doctor = await DoctorRegistration.findOne({ userId });
-    
-    if (!doctor) {
-      return res.status(404).json({ error: 'Doctor not found' });
-    }
+    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
 
-    // Update schedule fields
-    if (schedule) doctor.schedule = schedule;
-    if (lunchBreak) doctor.lunchBreak = lunchBreak;
-    if (consultationDuration) doctor.consultationDuration = consultationDuration;
     if (consultationFee) doctor.consultationFee = consultationFee;
-    if (maxPatientsPerDay) doctor.maxPatientsPerDay = maxPatientsPerDay;
 
-    // Update availableDays and time range for backward compatibility
-    if (schedule) {
-      doctor.availableDays = schedule.filter(s => s.active).map(s => s.day);
-      const activeDays = schedule.filter(s => s.active);
-      if (activeDays.length > 0) {
-        doctor.availableTimeStart = activeDays[0].start;
-        doctor.availableTimeEnd = activeDays[0].end;
+    if (hospital) {
+      // Per-hospital schedule update
+      if (!doctor.hospitalSchedules) doctor.hospitalSchedules = [];
+      const idx = doctor.hospitalSchedules.findIndex(hs => hs.hospital === hospital);
+      const entry = {
+        hospital,
+        schedule: schedule || [],
+        lunchBreak: lunchBreak || { start: '13:00', end: '14:00' },
+        consultationDuration: consultationDuration || 30,
+        maxPatientsPerDay: maxPatientsPerDay || 20
+      };
+      if (idx >= 0) doctor.hospitalSchedules[idx] = entry;
+      else doctor.hospitalSchedules.push(entry);
+
+      // Keep legacy fields in sync using first hospital's schedule
+      const first = doctor.hospitalSchedules[0];
+      if (first) {
+        doctor.schedule = first.schedule;
+        doctor.lunchBreak = first.lunchBreak;
+        doctor.consultationDuration = first.consultationDuration;
+        doctor.maxPatientsPerDay = first.maxPatientsPerDay;
+        doctor.availableDays = first.schedule.filter(s => s.active).map(s => s.day);
+        const active = first.schedule.filter(s => s.active);
+        if (active.length > 0) {
+          doctor.availableTimeStart = active[0].start;
+          doctor.availableTimeEnd = active[0].end;
+        }
       }
+    } else {
+      // Legacy flat schedule update
+      if (schedule) {
+        doctor.schedule = schedule;
+        doctor.availableDays = schedule.filter(s => s.active).map(s => s.day);
+        const active = schedule.filter(s => s.active);
+        if (active.length > 0) {
+          doctor.availableTimeStart = active[0].start;
+          doctor.availableTimeEnd = active[0].end;
+        }
+      }
+      if (lunchBreak) doctor.lunchBreak = lunchBreak;
+      if (consultationDuration) doctor.consultationDuration = consultationDuration;
+      if (maxPatientsPerDay) doctor.maxPatientsPerDay = maxPatientsPerDay;
     }
 
     await doctor.save();
-
-    res.json({ 
-      success: true, 
-      message: 'Schedule updated successfully',
-      doctor: {
-        schedule: doctor.schedule,
-        lunchBreak: doctor.lunchBreak,
-        consultationDuration: doctor.consultationDuration,
-        consultationFee: doctor.consultationFee,
-        maxPatientsPerDay: doctor.maxPatientsPerDay
-      }
-    });
+    res.json({ success: true, message: 'Schedule updated successfully', hospitalSchedules: doctor.hospitalSchedules });
   } catch (error) {
     console.error('Error updating schedule:', error);
     res.status(500).json({ error: 'Failed to update schedule', message: error.message });

@@ -84,6 +84,9 @@ app.use('/api/appointments', require('./src/routes/appointments'));
 // Prescriptions Routes
 app.use('/api/prescriptions', require('./src/routes/prescriptions'));
 
+// Hospital Partner Routes
+app.use('/api/partner', require('./src/routes/hospitalPartner'));
+
 // Import routes (to be created)
 // app.use('/api/users', require('./routes/users'));
 // app.use('/api/doctors', require('./routes/doctors'));

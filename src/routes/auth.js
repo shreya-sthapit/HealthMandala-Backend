@@ -93,7 +93,7 @@ router.post('/verify-email-otp', async (req, res) => {
         experienceYears: parseInt(record.experienceYears) || 0,
         specialization: record.specialization || '',
         qualification: record.qualification || '',
-        currentHospital: record.currentHospital || '',
+        currentHospital: Array.isArray(record.currentHospital) ? record.currentHospital : (record.currentHospital ? [record.currentHospital] : []),
         status: 'pending', // Admin must verify NMC at nmc.org.np before approving
       });
       await doctorReg.save();

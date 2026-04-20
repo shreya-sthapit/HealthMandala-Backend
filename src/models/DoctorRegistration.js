@@ -21,7 +21,7 @@ const doctorRegistrationSchema = new mongoose.Schema({
   nmcNumber: String, // Nepal Medical Council Registration Number
   qualification: String,
   experienceYears: Number,
-  currentHospital: String,
+  currentHospital: [String],
   consultationFee: Number,
   // Address Information
   address: {
@@ -34,7 +34,29 @@ const doctorRegistrationSchema = new mongoose.Schema({
   availableDays: [String],
   availableTimeStart: String,
   availableTimeEnd: String,
-  // Detailed Schedule
+  // Detailed Schedule — per hospital
+  hospitalSchedules: [{
+    hospital: String,
+    schedule: [{
+      day: String,
+      start: String,
+      end: String,
+      active: Boolean
+    }],
+    lunchBreak: {
+      start: String,
+      end: String
+    },
+    consultationDuration: {
+      type: Number,
+      default: 30
+    },
+    maxPatientsPerDay: {
+      type: Number,
+      default: 20
+    }
+  }],
+  // Legacy flat schedule (kept for backward compat)
   schedule: [{
     day: String,
     start: String,
