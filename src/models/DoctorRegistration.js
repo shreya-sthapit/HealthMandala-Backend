@@ -89,6 +89,8 @@ const doctorRegistrationSchema = new mongoose.Schema({
   nidBackImage: String,
   // Bio
   bio: String,
+  // Digital Signature
+  signature: String,
   // Status
   status: {
     type: String,
