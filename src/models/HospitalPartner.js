@@ -18,6 +18,7 @@ const hospitalPartnerSchema = new mongoose.Schema({
   // 4. Location
   province: { type: String, required: true },
   district: { type: String, required: true },
+  palika:   { type: String, required: true },
 
   // 5. Basic Info
   estimatedDoctors: { type: Number, required: true },
@@ -34,6 +35,15 @@ const hospitalPartnerSchema = new mongoose.Schema({
     default: 'under_review'
   },
   adminNote: { type: String },
+  inviteEmailSent: { type: Boolean, default: false },
+
+  // Extended profile fields (set by hospital admin)
+  website: { type: String },
+  googleMapsUrl: { type: String },
+  khaltiMerchantId: { type: String },
+  esewaId: { type: String },
+  opdTimings: { open: String, close: String },
+  logoUrl: { type: String },
 
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
@@ -42,6 +52,42 @@ const hospitalPartnerSchema = new mongoose.Schema({
 hospitalPartnerSchema.pre('save', function (next) {
   this.updatedAt = Date.now();
   next();
+});
+
+// Fire invite email whenever status is set to 'approved' via any update
+hospitalPartnerSchema.post('findOneAndUpdate', async function (doc) {
+  try {
+    if (!doc || doc.status !== 'approved') return;
+
+    // Only send if not already sent (track with inviteEmailSent flag)
+    if (doc.inviteEmailSent) return;
+
+    const jwt = require('jsonwebtoken');
+    const { sendHospitalInviteEmail } = require('../config/mailer');
+
+    const inviteToken = jwt.sign(
+      {
+        hospitalId: doc._id,
+        hospitalName: doc.hospitalName,
+        adminName: doc.adminName,
+        officialEmail: doc.officialEmail
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '48h' }
+    );
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const setPasswordUrl = `${frontendUrl}/hospital/set-password?token=${inviteToken}`;
+
+    await sendHospitalInviteEmail(doc.officialEmail, doc.adminName, doc.hospitalName, setPasswordUrl);
+
+    // Mark email as sent so it doesn't fire again on subsequent updates
+    await doc.constructor.findByIdAndUpdate(doc._id, { inviteEmailSent: true });
+
+    console.log(`✅ Invite email sent to ${doc.officialEmail}`);
+  } catch (err) {
+    console.error('❌ Invite email hook failed:', err.message);
+  }
 });
 
 module.exports = mongoose.model('HospitalPartner', hospitalPartnerSchema, 'HospitalPartners');
