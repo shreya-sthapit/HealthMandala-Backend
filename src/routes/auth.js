@@ -16,21 +16,15 @@ router.post('/send-email-otp', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Block doctor self-registration
+    if ((role || 'patient') === 'doctor') {
+      return res.status(403).json({ 
+        error: 'Doctor self-registration is no longer available. Please contact your hospital administrator to add you to the system.'
+      });
+    }
+
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ error: 'Email already registered' });
-
-    // For doctors: validate NMC number format before sending OTP
-    if ((role || 'patient') === 'doctor' && nmcNumber) {
-      const nmcResult = await verifyNMCDoctor(nmcNumber, firstName, lastName || '');
-      if (!nmcResult.verified) {
-        return res.status(400).json({ 
-          error: nmcResult.reason,
-          nmcVerificationFailed: true
-        });
-      }
-      // Flag for admin review — doctor registration will be set to 'pending'
-      console.log(`Doctor signup: NMC ${nmcNumber} for ${firstName} ${lastName} — pending admin review`);
-    }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 1 * 60 * 1000; // 1 minute
@@ -81,24 +75,6 @@ router.post('/verify-email-otp', async (req, res) => {
     await user.save();
     emailOtpStore.delete(email);
 
-    // If doctor, create DoctorRegistration with the extra fields
-    if (record.role === 'doctor') {
-      const DoctorRegistration = require('../models/DoctorRegistration');
-      const doctorReg = new DoctorRegistration({
-        userId: user._id,
-        firstName: record.firstName,
-        lastName: record.lastName,
-        email: record.email,
-        nmcNumber: record.nmcNumber || '',
-        experienceYears: parseInt(record.experienceYears) || 0,
-        specialization: record.specialization || '',
-        qualification: record.qualification || '',
-        currentHospital: Array.isArray(record.currentHospital) ? record.currentHospital : (record.currentHospital ? [record.currentHospital] : []),
-        status: 'pending', // Admin must verify NMC at nmc.org.np before approving
-      });
-      await doctorReg.save();
-    }
-
     // Issue JWT so frontend can log in immediately after OTP verification
     const token = jwt.sign(
       { userId: user._id, role: user.role },
@@ -139,6 +115,13 @@ router.post('/resend-email-otp', async (req, res) => {
 router.post('/send-verification', async (req, res) => {
   try {
     const { firstName, lastName, email, password, role } = req.body;
+
+    // Block doctor self-registration
+    if ((role || 'patient') === 'doctor') {
+      return res.status(403).json({ 
+        error: 'Doctor self-registration is no longer available. Please contact your hospital administrator.'
+      });
+    }
 
     const existing = await User.findOne({ email });
     if (existing) {
@@ -242,6 +225,13 @@ router.post('/register/email', async (req, res) => {
   try {
     const { firstName, lastName, email, password, role, firebaseUid } = req.body;
 
+    // Block doctor self-registration
+    if ((role || 'patient') === 'doctor') {
+      return res.status(403).json({ 
+        error: 'Doctor self-registration is no longer available. Please contact your hospital administrator.'
+      });
+    }
+
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -285,6 +275,13 @@ router.post('/register/email', async (req, res) => {
 router.post('/register/phone', async (req, res) => {
   try {
     const { firstName, lastName, phone, password, role } = req.body;
+
+    // Block doctor self-registration
+    if ((role || 'patient') === 'doctor') {
+      return res.status(403).json({ 
+        error: 'Doctor self-registration is no longer available. Please contact your hospital administrator.'
+      });
+    }
 
     // Check if user already exists
     const existingUser = await User.findOne({ phone });
