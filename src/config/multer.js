@@ -19,6 +19,8 @@ const storage = multer.diskStorage({
       uploadPath += 'nid/';
     } else if (file.fieldname.includes('profile')) {
       uploadPath += 'profiles/';
+    } else if (file.fieldname.includes('logo')) {
+      uploadPath += 'logos/';
     } else if (file.fieldname.includes('certificate') || file.fieldname.includes('degree')) {
       uploadPath += 'documents/';
     } else {
@@ -54,7 +56,7 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
+    fileSize: 10 * 1024 * 1024, // 10MB limit
   },
   fileFilter: fileFilter
 });
