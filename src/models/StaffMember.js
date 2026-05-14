@@ -1,7 +1,11 @@
 const mongoose = require('mongoose');
 
 const staffSchema = new mongoose.Schema({
-  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'HospitalPartner', required: true },
+  // Hospital associations (can work at multiple hospitals)
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'HospitalPartner', required: true }, // Primary hospital (for backward compatibility)
+  managedByHospitals: [{ type: mongoose.Schema.Types.ObjectId, ref: 'HospitalPartner' }], // All hospitals this staff works at
+  currentHospital: [String], // Hospital names
+  
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   name: { type: String, required: true },
   email: { type: String, required: true },
