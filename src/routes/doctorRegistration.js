@@ -4,104 +4,9 @@ const DoctorRegistration = require('../models/DoctorRegistration');
 const User = require('../models/User');
 const uploadConfigs = require('../config/multer');
 
-// Create doctor registration with file uploads
-router.post('/register', (req, res, next) => {
-  console.log('Doctor registration request received');
-  uploadConfigs.doctorUploads(req, res, (err) => {
-    if (err) {
-      console.error('Multer error:', err);
-      return res.status(400).json({ 
-        error: 'File upload error', 
-        message: err.message 
-      });
-    }
-    console.log('Files uploaded successfully');
-    next();
-  });
-}, async (req, res) => {
-  try {
-    const data = req.body;
-    console.log('Received doctor registration:', { firstName: data.firstName, specialization: data.specialization });
-    console.log('Uploaded files:', req.files);
-
-    // Get file paths from uploaded files
-    const profilePhoto = req.files?.profilePhoto?.[0]?.path || null;
-    const nidFrontImage = req.files?.nidFront?.[0]?.path || null;
-    const nidBackImage = req.files?.nidBack?.[0]?.path || null;
-    const nmcCertificateImage = req.files?.nmcCertificate?.[0]?.path || null;
-    const degreeCertificateImage = req.files?.degreeCertificate?.[0]?.path || null;
-
-    // Parse availableDays if it's a string
-    let availableDays = data.availableDays;
-    if (typeof availableDays === 'string') {
-      try {
-        availableDays = JSON.parse(availableDays);
-      } catch (e) {
-        console.log('Failed to parse availableDays, using as string');
-      }
-    }
-
-    const registration = new DoctorRegistration({
-      userId: data.userId || null,
-      firstName: data.firstName,
-      lastName: data.lastName,
-      email: data.email,
-      phone: data.phone,
-      profilePhoto,
-      dateOfBirth: data.dateOfBirth,
-      gender: data.gender,
-      specialization: data.specialization,
-      nmcNumber: data.nmcNumber,
-      qualification: data.qualification,
-      experienceYears: parseInt(data.experienceYears) || 0,
-      currentHospital: data.currentHospital,
-      consultationFee: parseInt(data.consultationFee) || 0,
-      address: {
-        street: data.address,
-        city: data.city,
-        district: data.district,
-        province: data.province
-      },
-      availableDays: availableDays,
-      availableTimeStart: data.availableTimeStart,
-      availableTimeEnd: data.availableTimeEnd,
-      nmcCertificateImage,
-      degreeCertificateImage,
-      nidNumber: data.nidNumber,
-      nidFrontImage,
-      nidBackImage,
-      bio: data.bio,
-      status: 'approved'  // auto-approved — admin supervises only
-    });
-
-    console.log('About to save doctor registration...');
-    await registration.save();
-    console.log('Doctor registration saved:', registration._id);
-
-    res.status(201).json({
-      success: true,
-      message: 'Doctor registration submitted successfully',
-      registration: { 
-        id: registration._id, 
-        status: registration.status,
-        files: {
-          profilePhoto,
-          nidFrontImage,
-          nidBackImage,
-          nmcCertificateImage,
-          degreeCertificateImage
-        }
-      }
-    });
-  } catch (error) {
-    console.error('Doctor registration error:', error);
-    console.error('Error stack:', error.stack);
-    res.status(500).json({ 
-      error: 'Registration failed', 
-      message: error.message,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
+// Doctor self-registration disabled — doctors are now added by hospitals only
+router.post('/register', (req, res) => {
+  res.status(403).json({ error: 'Doctor self-registration is no longer available. Please contact your hospital administrator.' });
 });
 
 // Get pending registrations (for admin)
@@ -165,7 +70,7 @@ router.get('/specialty-counts', async (req, res) => {
 router.get('/approved', async (req, res) => {
   try {
     const doctors = await DoctorRegistration.find({ status: { $in: ['approved', 'pending'] } })
-      .select('firstName lastName specialization consultationFee experienceYears currentHospital availableDays availableTimeStart availableTimeEnd address profilePhoto schedule lunchBreak consultationDuration leaves')
+      .select('firstName lastName specialization consultationFee experienceYears currentHospital availableDays availableTimeStart availableTimeEnd address profilePhoto schedule hospitalSchedules lunchBreak consultationDuration leaves')
       .sort({ createdAt: -1 });
 
     console.log('Found approved doctors:', doctors.length);
@@ -213,7 +118,7 @@ router.get('/approved', async (req, res) => {
         specialtyId: specialtyId,
         rating: 4.5 + Math.random() * 0.4, // Generate random rating between 4.5-4.9
         patients: Math.floor(Math.random() * 1000 + 500) + '', // Random patient count
-        experience: `${doc.experienceYears} yrs`,
+        experience: `${doc.experienceYears} years`,
         fee: doc.consultationFee,
         available: true,
         hospital: doc.currentHospital,
@@ -222,7 +127,8 @@ router.get('/approved', async (req, res) => {
         availableTimeEnd: doc.availableTimeEnd,
         address: doc.address,
         profilePhoto: doc.profilePhoto,
-        schedule: doc.schedule,
+        schedule: doc.schedule || (doc.hospitalSchedules && doc.hospitalSchedules[0] ? doc.hospitalSchedules[0].schedule : []),
+        hospitalSchedules: doc.hospitalSchedules,
         lunchBreak: doc.lunchBreak,
         consultationDuration: doc.consultationDuration,
         leaves: doc.leaves
@@ -488,6 +394,56 @@ router.delete('/leave/:userId/:leaveId', async (req, res) => {
   } catch (error) {
     console.error('Error removing leave:', error);
     res.status(500).json({ error: 'Failed to remove leave', message: error.message });
+  }
+});
+
+// Get available time slots for a doctor on a specific date
+router.get('/slots/:doctorId', async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const { date, hospitalName } = req.query;
+
+    if (!date || !hospitalName) {
+      return res.status(400).json({ error: 'Date and hospitalName are required' });
+    }
+
+    const doctor = await DoctorRegistration.findById(doctorId);
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    const { generateDoctorSlots } = require('../utils/slotGenerator');
+    const appointmentDate = new Date(date);
+    const slots = generateDoctorSlots(doctor, appointmentDate, hospitalName);
+
+    // Get booked appointments for this doctor on this date
+    const Appointment = require('../models/Appointment');
+    const bookedAppointments = await Appointment.find({
+      doctorId: doctorId,
+      appointmentDate: {
+        $gte: new Date(date + 'T00:00:00.000Z'),
+        $lt: new Date(date + 'T23:59:59.999Z')
+      },
+      status: { $nin: ['cancelled', 'rejected'] }
+    });
+
+    // Extract booked time slots
+    const bookedSlots = bookedAppointments.map(apt => apt.appointmentTime);
+
+    // Filter out booked slots
+    const availableSlots = slots.filter(slot => !bookedSlots.includes(slot));
+
+    res.json({
+      success: true,
+      date,
+      totalSlots: slots.length,
+      bookedSlots: bookedSlots.length,
+      availableSlots: availableSlots.length,
+      slots: availableSlots
+    });
+  } catch (error) {
+    console.error('Error generating slots:', error);
+    res.status(500).json({ error: 'Failed to generate slots', message: error.message });
   }
 });
 
