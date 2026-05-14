@@ -45,6 +45,18 @@ const hospitalPartnerSchema = new mongoose.Schema({
   opdTimings: { open: String, close: String },
   logoUrl: { type: String },
 
+  // Doctors managed by this hospital
+  doctors: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DoctorRegistration'
+  }],
+
+  // Staff members at this hospital
+  staff: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'StaffMember'
+  }],
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
