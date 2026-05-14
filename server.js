@@ -90,15 +90,24 @@ app.use('/api/partner', require('./src/routes/hospitalPartner'));
 // Hospital Dashboard Routes
 app.use('/api/hospital-dashboard', require('./src/routes/hospitalDashboard'));
 
+// Doctor Auth Routes
+app.use('/api/doctor-auth', require('./src/routes/doctorAuth'));
+
+// Staff Auth Routes
+app.use('/api/staff-auth', require('./src/routes/staffAuth'));
+
 // Import routes (to be created)
 // app.use('/api/users', require('./routes/users'));
 // app.use('/api/doctors', require('./routes/doctors'));
 // app.use('/api/appointments', require('./routes/appointments'));
 
 const PORT = process.env.PORT || 5001;
+const HOST = '0.0.0.0'; // Listen on all network interfaces
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
+  console.log(`Local: http://localhost:${PORT}`);
+  console.log(`Network: http://YOUR_IP:${PORT}`);
 });
 
 // Global error handler
