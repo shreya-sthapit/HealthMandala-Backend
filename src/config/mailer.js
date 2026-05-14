@@ -84,4 +84,82 @@ const sendHospitalInviteEmail = async (to, adminName, hospitalName, setPasswordU
   });
 };
 
-module.exports = { transporter, sendEmailOTP, sendWelcomeEmail, sendHospitalInviteEmail };
+// Send doctor invite / set-password email
+const sendDoctorInviteEmail = async (to, doctorName, hospitalName, setPasswordUrl) => {
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || 'HealthMandala <info.healthmandala@gmail.com>',
+    to,
+    subject: `Welcome to HealthMandala!`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:40px 24px;color:#1a1a1a;">
+        <h2 style="color:#00897b;font-size:1.4rem;margin:0 0 24px;">Welcome to HealthMandala!</h2>
+
+        <p style="margin:0 0 12px;">Dear <strong>Dr. ${doctorName}</strong>,</p>
+
+        <p style="margin:0 0 12px;line-height:1.6;">
+          You have been added as a doctor at <strong>${hospitalName}</strong> on the HealthMandala platform.
+        </p>
+
+        <p style="margin:0 0 28px;line-height:1.6;">
+          Please click the button below to set your password and activate your doctor account:
+        </p>
+
+        <div style="text-align:center;margin:0 0 28px;">
+          <a href="${setPasswordUrl}"
+             style="display:inline-block;padding:14px 36px;background:#00897b;color:#ffffff;text-decoration:none;border-radius:6px;font-size:1rem;font-weight:600;">
+            Set Your Password
+          </a>
+        </div>
+
+        <p style="font-size:0.875rem;color:#555;margin:0 0 32px;line-height:1.6;">
+          This link will expire in <strong>48 hours</strong>. If you did not expect this email, please ignore it.
+        </p>
+
+        <hr style="border:none;border-top:1px solid #e0e0e0;margin:0 0 16px;" />
+
+        <p style="font-size:0.8rem;color:#999;margin:0;">HealthMandala — Connecting Healthcare</p>
+      </div>
+    `,
+  });
+};
+
+// Send staff invite / set-password email
+const sendStaffInviteEmail = async (to, staffName, hospitalName, role, setPasswordUrl) => {
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || 'HealthMandala <info.healthmandala@gmail.com>',
+    to,
+    subject: `Welcome to HealthMandala!`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:40px 24px;color:#1a1a1a;">
+        <h2 style="color:#00897b;font-size:1.4rem;margin:0 0 24px;">Welcome to HealthMandala!</h2>
+
+        <p style="margin:0 0 12px;">Dear <strong>${staffName}</strong>,</p>
+
+        <p style="margin:0 0 12px;line-height:1.6;">
+          You have been added as a <strong>${role}</strong> at <strong>${hospitalName}</strong> on the HealthMandala platform.
+        </p>
+
+        <p style="margin:0 0 28px;line-height:1.6;">
+          Please click the button below to set your password and activate your staff account:
+        </p>
+
+        <div style="text-align:center;margin:0 0 28px;">
+          <a href="${setPasswordUrl}"
+             style="display:inline-block;padding:14px 36px;background:#00897b;color:#ffffff;text-decoration:none;border-radius:6px;font-size:1rem;font-weight:600;">
+            Set Your Password
+          </a>
+        </div>
+
+        <p style="font-size:0.875rem;color:#555;margin:0 0 32px;line-height:1.6;">
+          This link will expire in <strong>48 hours</strong>. If you did not expect this email, please ignore it.
+        </p>
+
+        <hr style="border:none;border-top:1px solid #e0e0e0;margin:0 0 16px;" />
+
+        <p style="font-size:0.8rem;color:#999;margin:0;">HealthMandala — Connecting Healthcare</p>
+      </div>
+    `,
+  });
+};
+
+module.exports = { transporter, sendEmailOTP, sendWelcomeEmail, sendHospitalInviteEmail, sendDoctorInviteEmail, sendStaffInviteEmail };
