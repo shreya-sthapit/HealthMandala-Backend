@@ -96,6 +96,18 @@ router.get('/all', async (req, res) => {
   }
 });
 
+// GET /api/hospital-partner/approved - Fetch only approved hospitals for public display
+router.get('/approved', async (req, res) => {
+  try {
+    const hospitals = await HospitalPartner.find({ status: 'approved' })
+      .select('hospitalName facilityCategory province district palika logoUrl')
+      .sort({ hospitalName: 1 });
+    res.json({ success: true, hospitals });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch approved hospitals', message: err.message });
+  }
+});
+
 router.put('/status/:id', async (req, res) => {
   try {
     const { status, adminNote } = req.body;
