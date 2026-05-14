@@ -22,6 +22,7 @@ const doctorRegistrationSchema = new mongoose.Schema({
   qualification: String,
   experienceYears: Number,
   currentHospital: [String],
+  managedByHospitals: [{ type: mongoose.Schema.Types.ObjectId, ref: 'HospitalPartner' }],
   consultationFee: Number,
   // Address Information
   address: {
@@ -41,7 +42,10 @@ const doctorRegistrationSchema = new mongoose.Schema({
       day: String,
       start: String,
       end: String,
-      active: Boolean
+      active: Boolean,
+      hasBreak: Boolean,
+      breakStart: String,
+      breakEnd: String
     }],
     lunchBreak: {
       start: String,
@@ -61,7 +65,10 @@ const doctorRegistrationSchema = new mongoose.Schema({
     day: String,
     start: String,
     end: String,
-    active: Boolean
+    active: Boolean,
+    hasBreak: Boolean,
+    breakStart: String,
+    breakEnd: String
   }],
   lunchBreak: {
     start: String,
