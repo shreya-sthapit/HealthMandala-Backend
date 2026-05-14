@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 const HospitalPartner = require('../models/HospitalPartner');
 const HospitalAdmin = require('../models/HospitalAdmin');
 const DoctorRegistration = require('../models/DoctorRegistration');
@@ -9,6 +10,8 @@ const Department = require('../models/Department');
 const StaffMember = require('../models/StaffMember');
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
+const { sendDoctorInviteEmail, sendStaffInviteEmail } = require('../config/mailer');
+const uploadConfigs = require('../config/multer');
 
 // Helper: get hospitalId from userId
 async function getHospitalId(userId) {
@@ -160,6 +163,70 @@ router.post('/appointments/walk-in', async (req, res) => {
 
 // ── Doctors ───────────────────────────────────────────────────────────────────
 
+// Helper: escape regex special chars
+const escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Helper: check if two time ranges overlap
+function timeRangesOverlap(start1, end1, start2, end2) {
+  const toMinutes = (timeStr) => {
+    try {
+      const [hours, minutes] = timeStr.split(':').map(Number);
+      return hours * 60 + minutes;
+    } catch (e) {
+      console.error('Invalid time format:', timeStr);
+      return 0;
+    }
+  };
+  
+  const s1 = toMinutes(start1);
+  const e1 = toMinutes(end1);
+  const s2 = toMinutes(start2);
+  const e2 = toMinutes(end2);
+  
+  return (s1 < e2) && (s2 < e1);
+}
+
+// Helper: check for schedule conflicts across hospitals
+function checkScheduleConflict(existingSchedules, newSchedule) {
+  if (!existingSchedules || existingSchedules.length === 0) return null;
+  if (!newSchedule || newSchedule.length === 0) return null;
+  
+  for (const newEntry of newSchedule) {
+    if (!newEntry.active) continue;
+    
+    const newDay = newEntry.day;
+    const newStart = newEntry.start;
+    const newEnd = newEntry.end;
+    
+    for (const hospitalSchedule of existingSchedules) {
+      const hospitalName = hospitalSchedule.hospital;
+      const existingSchedule = hospitalSchedule.schedule || [];
+      
+      for (const existingEntry of existingSchedule) {
+        if (!existingEntry.active) continue;
+        
+        if (existingEntry.day === newDay) {
+          const existingStart = existingEntry.start;
+          const existingEnd = existingEntry.end;
+          
+          if (timeRangesOverlap(newStart, newEnd, existingStart, existingEnd)) {
+            return {
+              conflictingHospital: hospitalName,
+              day: newDay,
+              existingStart,
+              existingEnd,
+              newStart,
+              newEnd
+            };
+          }
+        }
+      }
+    }
+  }
+  
+  return null;
+}
+
 // GET /api/hospital-dashboard/doctors
 router.get('/doctors', async (req, res) => {
   try {
@@ -167,10 +234,25 @@ router.get('/doctors', async (req, res) => {
     const hospitalId = await getHospitalId(userId);
     if (!hospitalId) return res.status(403).json({ error: 'Not a hospital admin' });
 
-    const hospital = await HospitalPartner.findById(hospitalId);
-    const hospitalName = hospital?.hospitalName || '';
-
-    const doctors = await DoctorRegistration.find({ currentHospital: hospitalName }).select('-nidFrontImage -nidBackImage -nmcCertificateImage -degreeCertificateImage');
+    // Fetch doctors from both sources for redundancy
+    // Method 1: From DoctorRegistration where managedByHospitals includes this hospital
+    const doctorsFromReg = await DoctorRegistration.find({ managedByHospitals: hospitalId })
+      .select('-nidFrontImage -nidBackImage -nmcCertificateImage -degreeCertificateImage');
+    
+    // Method 2: From HospitalPartner's doctors array (populate)
+    const hospital = await HospitalPartner.findById(hospitalId).populate({
+      path: 'doctors',
+      select: '-nidFrontImage -nidBackImage -nmcCertificateImage -degreeCertificateImage'
+    });
+    
+    // Merge and deduplicate by _id
+    const doctorMap = new Map();
+    doctorsFromReg.forEach(d => doctorMap.set(d._id.toString(), d));
+    (hospital?.doctors || []).forEach(d => {
+      if (d) doctorMap.set(d._id.toString(), d);
+    });
+    
+    const doctors = Array.from(doctorMap.values());
     res.json({ success: true, doctors });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch doctors', message: err.message });
@@ -180,43 +262,128 @@ router.get('/doctors', async (req, res) => {
 // POST /api/hospital-dashboard/doctors/add
 router.post('/doctors/add', async (req, res) => {
   try {
-    const { userId, nmcNumber, specialization, consultationFee, schedule, firstName, lastName, phone, email, qualification, yearsOfExperience, signature } = req.body;
+    const { userId, nmcNumber, specialization, consultationFee, schedule,
+            firstName, lastName, phone, email, qualification, yearsOfExperience, signature } = req.body;
+
     const hospitalId = await getHospitalId(userId);
     if (!hospitalId) return res.status(403).json({ error: 'Not a hospital admin' });
 
     const hospital = await HospitalPartner.findById(hospitalId);
     const hospitalName = hospital?.hospitalName || '';
 
-    // Check if doctor with NMC already exists
-    let doctor = await DoctorRegistration.findOne({ nmcNumber });
+    // Check if doctor with this NMC already managed by this hospital
+    let doctor = await DoctorRegistration.findOne({ nmcNumber, managedByHospitals: hospitalId });
     if (doctor) {
-      // Add this hospital to their list if not already there
-      if (!doctor.currentHospital.includes(hospitalName)) {
-        doctor.currentHospital.push(hospitalName);
-      }
-      // Add hospital schedule
-      const existingScheduleIdx = doctor.hospitalSchedules?.findIndex(s => s.hospital === hospitalName);
-      if (existingScheduleIdx === -1 || existingScheduleIdx === undefined) {
-        if (!doctor.hospitalSchedules) doctor.hospitalSchedules = [];
-        doctor.hospitalSchedules.push({ hospital: hospitalName, schedule: schedule || [] });
-      }
-      await doctor.save();
-      return res.json({ success: true, doctor, message: 'Doctor linked to hospital' });
+      return res.status(400).json({ error: 'A doctor with this NMC number is already added to your hospital' });
     }
 
-    // Create new doctor registration
-    doctor = new DoctorRegistration({
-      firstName, lastName, phone, email,
-      nmcNumber, specialization,
-      qualification,
-      experienceYears: yearsOfExperience ? parseInt(yearsOfExperience) : undefined,
-      signature: signature || '',
-      consultationFee: parseFloat(consultationFee) || 0,
-      currentHospital: [hospitalName],
-      hospitalSchedules: [{ hospital: hospitalName, schedule: schedule || [] }],
-      status: 'pending'
-    });
-    await doctor.save();
+    // Check if NMC exists in another hospital — link them
+    doctor = await DoctorRegistration.findOne({ nmcNumber });
+    let isNewDoctor = false;
+    
+    if (doctor) {
+      // Check for schedule conflicts before adding
+      console.log(`Checking schedule conflicts for Dr. ${firstName} ${lastName} (NMC: ${nmcNumber})`);
+      console.log(`Existing hospitals: ${(doctor.hospitalSchedules || []).map(h => h.hospital).join(', ')}`);
+      
+      const conflict = checkScheduleConflict(doctor.hospitalSchedules, schedule);
+      if (conflict) {
+        console.log(`Schedule conflict detected for Dr. ${firstName} ${lastName}:`, conflict);
+        return res.status(400).json({
+          success: false,
+          error: `Schedule conflict detected: Dr. ${firstName} ${lastName} already works at ${conflict.conflictingHospital} on ${conflict.day} from ${conflict.existingStart}-${conflict.existingEnd}. Cannot add schedule for ${conflict.newStart}-${conflict.newEnd}.`,
+          conflict: {
+            doctorName: `Dr. ${firstName} ${lastName}`,
+            conflictingHospital: conflict.conflictingHospital,
+            day: conflict.day,
+            existingTimeRange: `${conflict.existingStart}-${conflict.existingEnd}`,
+            newTimeRange: `${conflict.newStart}-${conflict.newEnd}`
+          }
+        });
+      }
+      
+      console.log(`No conflicts found. Adding Dr. ${firstName} ${lastName} to ${hospitalName}`);
+      
+      if (!doctor.managedByHospitals) doctor.managedByHospitals = [];
+      doctor.managedByHospitals.push(hospitalId);
+      if (!doctor.currentHospital.includes(hospitalName)) doctor.currentHospital.push(hospitalName);
+      if (!doctor.hospitalSchedules) doctor.hospitalSchedules = [];
+      const hasSchedule = doctor.hospitalSchedules.some(s => s.hospital?.trim().toLowerCase() === hospitalName.trim().toLowerCase());
+      if (!hasSchedule) doctor.hospitalSchedules.push({ hospital: hospitalName, schedule: schedule || [] });
+      await doctor.save();
+
+      // Add doctor to hospital's doctors array
+      await HospitalPartner.findByIdAndUpdate(hospitalId, { $addToSet: { doctors: doctor._id } });
+    } else {
+      // Create new doctor
+      isNewDoctor = true;
+      doctor = new DoctorRegistration({
+        firstName, lastName, phone, email,
+        nmcNumber, specialization, qualification,
+        experienceYears: yearsOfExperience !== '' && yearsOfExperience != null ? parseInt(yearsOfExperience) : undefined,
+        signature: signature || '',
+        consultationFee: parseFloat(consultationFee) || 0,
+        managedByHospitals: [hospitalId],
+        currentHospital: [hospitalName],
+        hospitalSchedules: [{ hospital: hospitalName, schedule: schedule || [] }],
+        status: 'approved',
+      });
+      await doctor.save();
+
+      // Add doctor to hospital's doctors array
+      await HospitalPartner.findByIdAndUpdate(hospitalId, { $addToSet: { doctors: doctor._id } });
+    }
+
+    // Send invitation email only for NEW doctors
+    if (isNewDoctor && email) {
+      try {
+        const inviteToken = jwt.sign(
+          {
+            doctorId: doctor._id,
+            doctorName: `${firstName} ${lastName}`,
+            hospitalName: hospitalName,
+            email: email
+          },
+          process.env.JWT_SECRET,
+          { expiresIn: '48h' }
+        );
+
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const setPasswordUrl = `${frontendUrl}/doctor/set-password?token=${inviteToken}`;
+
+        await sendDoctorInviteEmail(email, `${firstName} ${lastName}`, hospitalName, setPasswordUrl);
+        console.log(`✅ Invitation email sent to ${email}`);
+      } catch (emailErr) {
+        console.error('❌ Failed to send invitation email:', emailErr.message);
+        // Don't fail the request if email fails - doctor is already added
+      }
+    }
+
+    // Auto-link to matching department by specialization
+    if (specialization) {
+      // Try exact match first (case-insensitive)
+      let dept = await Department.findOne({
+        hospitalId,
+        name: { $regex: new RegExp(`^${escapeRegex(specialization)}\\s*\\(`, 'i') }
+      });
+      
+      // If no match with parentheses, try exact name match
+      if (!dept) {
+        dept = await Department.findOne({
+          hospitalId,
+          name: { $regex: new RegExp(`^${escapeRegex(specialization)}$`, 'i') }
+        });
+      }
+      
+      if (dept) {
+        console.log(`Auto-linking doctor to department: ${dept.name}`);
+        await Department.findByIdAndUpdate(dept._id, { $addToSet: { doctors: doctor._id } });
+      } else {
+        console.log(`No matching department found for specialization: ${specialization}`);
+        console.log(`Available departments:`, await Department.find({ hospitalId }).select('name'));
+      }
+    }
+
     res.status(201).json({ success: true, doctor });
   } catch (err) {
     res.status(500).json({ error: 'Failed to add doctor', message: err.message });
@@ -226,43 +393,49 @@ router.post('/doctors/add', async (req, res) => {
 // PUT /api/hospital-dashboard/doctors/:id
 router.put('/doctors/:id', async (req, res) => {
   try {
-    const { consultationFee, schedule, hospitalName, leaves, firstName, lastName, phone, email, specialization, qualification, yearsOfExperience, signature, departmentId } = req.body;
+    const { consultationFee, schedule, hospitalName, leaves,
+            firstName, lastName, phone, email, specialization,
+            qualification, yearsOfExperience, signature, userId } = req.body;
+
     const doctor = await DoctorRegistration.findById(req.params.id);
     if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
 
-    if (firstName !== undefined) doctor.firstName = firstName;
-    if (lastName !== undefined) doctor.lastName = lastName;
-    if (phone !== undefined) doctor.phone = phone;
-    if (email !== undefined) doctor.email = email;
+    if (firstName  !== undefined) doctor.firstName  = firstName;
+    if (lastName   !== undefined) doctor.lastName   = lastName;
+    if (phone      !== undefined) doctor.phone      = phone;
+    if (email      !== undefined) doctor.email      = email;
     if (specialization !== undefined) doctor.specialization = specialization;
-    if (qualification !== undefined) doctor.qualification = qualification;
-    if (yearsOfExperience !== undefined) doctor.experienceYears = yearsOfExperience;
-    if (signature !== undefined) doctor.signature = signature;
-    if (consultationFee !== undefined) doctor.consultationFee = consultationFee;
+    if (qualification  !== undefined) doctor.qualification  = qualification;
+    if (yearsOfExperience !== undefined) doctor.experienceYears = yearsOfExperience !== '' ? parseInt(yearsOfExperience) : undefined;
+    if (signature  !== undefined) doctor.signature  = signature;
+    if (consultationFee !== undefined) doctor.consultationFee = parseFloat(consultationFee);
     if (leaves) doctor.leaves = leaves;
 
-    // Handle department change: remove from all depts, add to new one
-    if (departmentId !== undefined) {
-      const hospitalId = await getHospitalId(req.body.userId || req.query.userId);
-      if (hospitalId) {
-        await Department.updateMany({ hospitalId }, { $pull: { doctors: doctor._id } });
-        if (departmentId) {
-          await Department.findByIdAndUpdate(departmentId, { $addToSet: { doctors: doctor._id } });
-        }
-      }
-    }
-
+    // Update hospital-specific schedule
     if (schedule && hospitalName) {
-      const idx = (doctor.hospitalSchedules || []).findIndex(
+      if (!doctor.hospitalSchedules) doctor.hospitalSchedules = [];
+      const idx = doctor.hospitalSchedules.findIndex(
         s => s.hospital?.trim().toLowerCase() === hospitalName.trim().toLowerCase()
       );
       if (idx >= 0) doctor.hospitalSchedules[idx].schedule = schedule;
-      else {
-        if (!doctor.hospitalSchedules) doctor.hospitalSchedules = [];
-        doctor.hospitalSchedules.push({ hospital: hospitalName, schedule });
+      else doctor.hospitalSchedules.push({ hospital: hospitalName, schedule });
+    }
+
+    await doctor.save();
+
+    // Re-link to department based on updated specialization
+    if (specialization !== undefined && userId) {
+      const hospitalId = await getHospitalId(userId);
+      if (hospitalId) {
+        await Department.updateMany({ hospitalId }, { $pull: { doctors: doctor._id } });
+        const dept = await Department.findOne({
+          hospitalId,
+          name: { $regex: new RegExp(`^${escapeRegex(specialization)}`, 'i') }
+        });
+        if (dept) await Department.findByIdAndUpdate(dept._id, { $addToSet: { doctors: doctor._id } });
       }
     }
-    await doctor.save();
+
     res.json({ success: true, doctor });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update doctor', message: err.message });
@@ -276,37 +449,51 @@ router.delete('/doctors/:id', async (req, res) => {
     const hospitalId = await getHospitalId(userId);
     if (!hospitalId) return res.status(403).json({ error: 'Not a hospital admin' });
 
-    const hospital = await HospitalPartner.findById(hospitalId);
-    const hospitalName = hospital?.hospitalName || '';
-
     const doctor = await DoctorRegistration.findById(req.params.id);
     if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
 
-    // Remove hospital from doctor's list rather than deleting the doctor record
+    const hospital = await HospitalPartner.findById(hospitalId);
+    const hospitalName = hospital?.hospitalName || '';
+
+    console.log(`Removing doctor ${doctor.firstName} ${doctor.lastName} from hospital ${hospitalName}`);
+
+    // Remove this hospital from the doctor's managed list
+    doctor.managedByHospitals = (doctor.managedByHospitals || []).filter(id => id.toString() !== hospitalId.toString());
     doctor.currentHospital = doctor.currentHospital.filter(h => h !== hospitalName);
-    doctor.hospitalSchedules = (doctor.hospitalSchedules || []).filter(s => s.hospital !== hospitalName);
-    await doctor.save();
-
-    // Remove doctor from all departments in this hospital
-    await Department.updateMany(
-      { hospitalId },
-      { $pull: { doctors: doctor._id } }
-    );
-
-    // Also clean up any string-form references
-    const depts = await Department.find({ hospitalId });
-    for (const dept of depts) {
-      const before = dept.doctors.length;
-      dept.doctors = dept.doctors.filter(id => id.toString() !== doctor._id.toString());
-      if (dept.doctors.length !== before) await dept.save();
+    doctor.hospitalSchedules = (doctor.hospitalSchedules || []).filter(s => s.hospital?.trim().toLowerCase() !== hospitalName.trim().toLowerCase());
+    
+    // Check if doctor has any other hospitals
+    const hasOtherHospitals = doctor.managedByHospitals.length > 0;
+    
+    if (hasOtherHospitals) {
+      // Doctor works at other hospitals - just update the document
+      await doctor.save();
+      console.log(`Doctor still works at ${doctor.managedByHospitals.length} other hospital(s) - updated references`);
+    } else {
+      // Doctor has no other hospitals - delete completely from database
+      await DoctorRegistration.findByIdAndDelete(doctor._id);
+      console.log(`Doctor has no other hospitals - deleted from DoctorRegistration collection`);
     }
 
-    res.json({ success: true });
+    // Remove from hospital's doctors array
+    await HospitalPartner.findByIdAndUpdate(hospitalId, { $pull: { doctors: doctor._id } });
+    console.log(`Removed doctor from hospital's doctors array`);
+
+    // Remove from all departments in this hospital
+    const deptResult = await Department.updateMany({ hospitalId }, { $pull: { doctors: doctor._id } });
+    console.log(`Removed doctor from ${deptResult.modifiedCount} departments`);
+
+    res.json({ 
+      success: true, 
+      message: hasOtherHospitals 
+        ? 'Doctor removed from your hospital successfully' 
+        : 'Doctor removed from your hospital and deleted from system (no other hospitals)'
+    });
   } catch (err) {
+    console.error('Error removing doctor:', err);
     res.status(500).json({ error: 'Failed to remove doctor', message: err.message });
   }
 });
-
 // ── Departments ───────────────────────────────────────────────────────────────
 
 // GET /api/hospital-dashboard/departments
@@ -316,14 +503,22 @@ router.get('/departments', async (req, res) => {
     const hospitalId = await getHospitalId(userId);
     if (!hospitalId) return res.status(403).json({ error: 'Not a hospital admin' });
 
-    const departments = await Department.find({ hospitalId }).populate('doctors', 'firstName lastName specialization');
+    const departments = await Department.find({ hospitalId }).populate('doctors', 'firstName lastName specialization currentHospital managedByHospitals');
 
     // Clean up stale doctor references (doctors that no longer exist or were removed from hospital)
     const hospital = await HospitalPartner.findById(hospitalId);
     const hospitalName = hospital?.hospitalName || '';
+    
     for (const dept of departments) {
-      const validDoctors = dept.doctors.filter(d => d !== null && d.currentHospital?.includes(hospitalName));
+      const validDoctors = dept.doctors.filter(d => {
+        if (!d) return false;
+        // Check if doctor is managed by this hospital (by ID)
+        const managedByThisHospital = d.managedByHospitals?.some(hId => hId.toString() === hospitalId.toString());
+        return managedByThisHospital;
+      });
+      
       if (validDoctors.length !== dept.doctors.length) {
+        console.log(`Cleaning up department ${dept.name}: ${dept.doctors.length} -> ${validDoctors.length} doctors`);
         await Department.findByIdAndUpdate(dept._id, { doctors: validDoctors.map(d => d._id) });
       }
     }
@@ -380,7 +575,21 @@ router.get('/staff', async (req, res) => {
     const hospitalId = await getHospitalId(userId);
     if (!hospitalId) return res.status(403).json({ error: 'Not a hospital admin' });
 
-    const staff = await StaffMember.find({ hospitalId });
+    // Fetch staff from both sources for redundancy
+    // Method 1: From StaffMember where managedByHospitals includes this hospital
+    const staffFromReg = await StaffMember.find({ managedByHospitals: hospitalId });
+    
+    // Method 2: From HospitalPartner's staff array (populate)
+    const hospital = await HospitalPartner.findById(hospitalId).populate('staff');
+    
+    // Merge and deduplicate by _id
+    const staffMap = new Map();
+    staffFromReg.forEach(s => staffMap.set(s._id.toString(), s));
+    (hospital?.staff || []).forEach(s => {
+      if (s) staffMap.set(s._id.toString(), s);
+    });
+    
+    const staff = Array.from(staffMap.values());
     res.json({ success: true, staff });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch staff', message: err.message });
@@ -394,8 +603,77 @@ router.post('/staff', async (req, res) => {
     const hospitalId = await getHospitalId(userId);
     if (!hospitalId) return res.status(403).json({ error: 'Not a hospital admin' });
 
-    const staff = new StaffMember({ hospitalId, name, email, phone, role, permissions });
-    await staff.save();
+    const hospital = await HospitalPartner.findById(hospitalId);
+    const hospitalName = hospital?.hospitalName || '';
+
+    // Check if staff with this email already exists at this hospital
+    let staff = await StaffMember.findOne({ email, managedByHospitals: hospitalId });
+    if (staff) {
+      return res.status(400).json({ error: 'A staff member with this email is already added to your hospital' });
+    }
+
+    // Check if staff exists at another hospital
+    staff = await StaffMember.findOne({ email });
+    let isNewStaff = false;
+    
+    if (staff) {
+      // Link to this hospital
+      if (!staff.managedByHospitals) staff.managedByHospitals = [];
+      staff.managedByHospitals.push(hospitalId);
+      if (!staff.currentHospital.includes(hospitalName)) staff.currentHospital.push(hospitalName);
+      await staff.save();
+
+      // Add to hospital's staff array
+      await HospitalPartner.findByIdAndUpdate(hospitalId, { $addToSet: { staff: staff._id } });
+      
+      console.log(`Linked existing staff ${name} to ${hospitalName}`);
+    } else {
+      // Create new staff member
+      isNewStaff = true;
+      staff = new StaffMember({ 
+        hospitalId, 
+        managedByHospitals: [hospitalId],
+        currentHospital: [hospitalName],
+        name, 
+        email, 
+        phone, 
+        role, 
+        permissions 
+      });
+      await staff.save();
+
+      // Add to hospital's staff array
+      await HospitalPartner.findByIdAndUpdate(hospitalId, { $addToSet: { staff: staff._id } });
+      
+      console.log(`Created new staff ${name} at ${hospitalName}`);
+    }
+
+    // Send invitation email only for NEW staff
+    if (isNewStaff && email) {
+      try {
+        const inviteToken = jwt.sign(
+          {
+            staffId: staff._id,
+            staffName: name,
+            hospitalName: hospitalName,
+            role: role,
+            email: email
+          },
+          process.env.JWT_SECRET,
+          { expiresIn: '48h' }
+        );
+
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const setPasswordUrl = `${frontendUrl}/staff/set-password?token=${inviteToken}`;
+
+        await sendStaffInviteEmail(email, name, hospitalName, role, setPasswordUrl);
+        console.log(`✅ Invitation email sent to ${email}`);
+      } catch (emailErr) {
+        console.error('❌ Failed to send invitation email:', emailErr.message);
+        // Don't fail the request if email fails - staff is already added
+      }
+    }
+
     res.status(201).json({ success: true, staff });
   } catch (err) {
     res.status(500).json({ error: 'Failed to add staff', message: err.message });
@@ -416,9 +694,47 @@ router.put('/staff/:id', async (req, res) => {
 // DELETE /api/hospital-dashboard/staff/:id
 router.delete('/staff/:id', async (req, res) => {
   try {
-    await StaffMember.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
+    const { userId } = req.query;
+    const hospitalId = await getHospitalId(userId);
+    if (!hospitalId) return res.status(403).json({ error: 'Not a hospital admin' });
+
+    const staff = await StaffMember.findById(req.params.id);
+    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+
+    const hospital = await HospitalPartner.findById(hospitalId);
+    const hospitalName = hospital?.hospitalName || '';
+
+    console.log(`Removing staff ${staff.name} from hospital ${hospitalName}`);
+
+    // Remove this hospital from the staff's managed list
+    staff.managedByHospitals = (staff.managedByHospitals || []).filter(id => id.toString() !== hospitalId.toString());
+    staff.currentHospital = staff.currentHospital.filter(h => h !== hospitalName);
+    
+    // Check if staff has any other hospitals
+    const hasOtherHospitals = staff.managedByHospitals.length > 0;
+    
+    if (hasOtherHospitals) {
+      // Staff works at other hospitals - just update the document
+      await staff.save();
+      console.log(`Staff still works at ${staff.managedByHospitals.length} other hospital(s) - updated references`);
+    } else {
+      // Staff has no other hospitals - delete completely from database
+      await StaffMember.findByIdAndDelete(staff._id);
+      console.log(`Staff has no other hospitals - deleted from StaffMember collection`);
+    }
+
+    // Remove from hospital's staff array
+    await HospitalPartner.findByIdAndUpdate(hospitalId, { $pull: { staff: staff._id } });
+    console.log(`Removed staff from hospital's staff array`);
+
+    res.json({ 
+      success: true, 
+      message: hasOtherHospitals 
+        ? 'Staff removed from your hospital successfully' 
+        : 'Staff removed from your hospital and deleted from system (no other hospitals)'
+    });
   } catch (err) {
+    console.error('Error removing staff:', err);
     res.status(500).json({ error: 'Failed to delete staff', message: err.message });
   }
 });
@@ -496,6 +812,28 @@ router.put('/profile', async (req, res) => {
     res.json({ success: true, hospital });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update profile', message: err.message });
+  }
+});
+
+// POST /api/hospital-dashboard/profile/logo
+router.post('/profile/logo', uploadConfigs.single('logo'), async (req, res) => {
+  try {
+    const { userId } = req.body;
+    const hospitalId = await getHospitalId(userId);
+    if (!hospitalId) return res.status(403).json({ error: 'Not a hospital admin' });
+
+    if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
+
+    const logoUrl = `/${req.file.path.replace(/\\/g, '/')}`;
+    const hospital = await HospitalPartner.findByIdAndUpdate(
+      hospitalId, 
+      { logoUrl, updatedAt: Date.now() }, 
+      { new: true }
+    );
+
+    res.json({ success: true, logoUrl, hospital });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to upload hospital image', message: err.message });
   }
 });
 
